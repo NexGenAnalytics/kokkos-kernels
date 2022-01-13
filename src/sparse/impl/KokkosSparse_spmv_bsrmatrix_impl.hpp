@@ -618,48 +618,38 @@ struct BSR_GEMV_Functor {
 
   KOKKOS_INLINE_FUNCTION
   void operator()(const team_member &dev) const {
+
     using y_value_type = typename YVector::non_const_value_type;
-    Kokkos::parallel_for(
-        Kokkos::TeamThreadRange(dev, 0, blocks_per_team),
-        [&](const ordinal_type &loop) {
-          const ordinal_type iBlock =
-              static_cast<ordinal_type>(dev.league_rank()) * blocks_per_team +
-              loop;
-          if (iBlock >= m_A.numRows()) {
-            return;
-          }
-          const auto start = m_A.graph.row_map(iBlock);
-          const ordinal_type count =
-              static_cast<ordinal_type>(m_A.graph.row_map(iBlock + 1) - start);
-          const auto row = m_A.block_row_Const(iBlock);
-          //
-          auto yview = Kokkos::subview(
-              m_y, Kokkos::make_pair(iBlock * block_dim,
-                                     iBlock * block_dim + block_dim));
-          //
-          for (ordinal_type ir = 0; ir < block_dim; ++ir) {
-            y_value_type sum = 0;
+        const ordinal_type iBlock = static_cast<ordinal_type>(dev.league_rank());
 
-            Kokkos::parallel_reduce(
-                Kokkos::ThreadVectorRange(dev, count),
-                [&](const ordinal_type &iEntry, y_value_type &lsum) {
-                  const auto start_col = row.block_colidx(iEntry) * block_dim;
-                  for (ordinal_type jr = 0; jr < block_dim; ++jr) {
-                    const value_type val =
-                        conjugate
-                            ? ATV::conj(row.local_block_value(iEntry, ir, jr))
-                            : row.local_block_value(iEntry, ir, jr);
-                    lsum += val * m_x(start_col + jr);
-                  }
-                },
-                sum);
+        const size_type Y_ptBeg = iBlock * block_dim;
+        const size_type Y_ptEnd = Y_ptBeg + block_dim;
+        auto Y_cur = Kokkos::subview(m_y, ::Kokkos::make_pair (Y_ptBeg, Y_ptEnd));
 
-            Kokkos::single(Kokkos::PerThread(dev), [&]() {
-              sum *= alpha;
-              yview(ir) += sum;
-            });
-          }
-        });
+        const auto blkBeg = m_A.graph.row_map(iBlock);
+        const auto count = m_A.graph.row_map(iBlock + 1) - blkBeg;
+
+        const auto myRow = m_A.block_row_Const(iBlock);
+        auto A_cur = myRow.block(0);
+
+        auto X_cur          = Kokkos::subview(m_x, ::Kokkos::make_pair(0, block_dim));
+
+        Kokkos::parallel_for
+              (Kokkos::TeamThreadRange(dev, 0, count),
+                   [&](const ordinal_type &jBlock) {
+      //A_cur               = myRow.block(jBlock);
+      const auto X_blkCol = m_A.graph.entries(jBlock + blkBeg);
+      const auto X_ptBeg  = X_blkCol * block_dim;
+      //auto X_cur          = Kokkos::subview(
+      //             m_x, ::Kokkos::make_pair(X_ptBeg, X_ptBeg + block_dim));
+      Kokkos::parallel_for(
+              Kokkos::ThreadVectorRange(dev, block_dim), [&](const ordinal_type &k0) {
+                y_value_type val(0);
+                for (ordinal_type k1 = 0; k1 < block_dim; ++k1)
+                  val += A_cur(k0, k1) * X_cur(k1);
+                Kokkos::atomic_add(&Y_cur(k0), alpha * val);
+              });
+      });
   }
 };
 
@@ -789,6 +779,25 @@ void spMatVec_no_transpose(
   int64_t blocks_per_team = (rows_per_team + block_dim - 1) / block_dim;
   blocks_per_team         = (blocks_per_team < 1) ? 1 : blocks_per_team;
   int64_t worksets = (A.numRows() + blocks_per_team - 1) / blocks_per_team;
+
+  team_size = 8;
+  if (block_dim <= 4) {
+    vector_length = 4;
+    team_size = 64;
+  }
+  else if (block_dim <= 8) {
+    vector_length = 8;
+    team_size = 32;
+  }
+  else if (block_dim <= 16) {
+    vector_length = 16;
+    team_size = 16;
+  }
+  else {
+    vector_length = 32;
+    team_size = 8;
+  }
+  worksets = A.numRows();
 
   AMatrix_Internal A_internal = A;
 
