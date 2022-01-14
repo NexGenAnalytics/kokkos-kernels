@@ -632,7 +632,7 @@ struct BSR_GEMV_Functor {
         Kokkos::TeamThreadRange(dev, 0, count),
         [&](const ordinal_type &jBlock) {
           const auto A_cur    = myRow.block(jBlock);
-          const auto X_blkCol = myRow.block(jBlock);
+          const auto X_blkCol = myRow.block_colidx(jBlock);
           const auto X_ptBeg  = X_blkCol * block_dim;
           const auto X_cur    = Kokkos::subview(
               m_x, ::Kokkos::make_pair(X_ptBeg, X_ptBeg + block_dim));
