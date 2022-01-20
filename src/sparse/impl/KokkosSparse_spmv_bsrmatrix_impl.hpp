@@ -747,8 +747,9 @@ void spMatVec_no_transpose(
       use_static_schedule = true;
     }
   }
-  int team_size     = -1;
-  int vector_length = -1;
+  int team_size        = -1;
+  int vector_length    = -1;
+  const auto block_dim = A.blockDim();
 
   team_size = 8;
   if (block_dim <= 4) {
@@ -777,7 +778,7 @@ void spMatVec_no_transpose(
   }
 
   BSR_GEMV_Functor<AMatrix_Internal, XVector, YVector> func(
-      alpha, A, x, beta, y, A.blockDim(), useConjugate);
+      alpha, A, x, beta, y, block_dim, useConjugate);
 
   if (((A.nnz() > 10000000) || use_dynamic_schedule) && !use_static_schedule) {
     Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Dynamic>>
