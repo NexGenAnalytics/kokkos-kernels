@@ -555,24 +555,25 @@ struct BSR_GEMV_Functor {
   typedef typename AMatrix::non_const_size_type size_type;
 
   const value_type alpha;
+  const value_type beta;
+
   AMatrix m_A;
   XVector m_x;
   YVector m_y;
 
   const ordinal_type block_dim;
-  const ordinal_type blocks_per_team;
 
   bool conjugate = false;
 
-  BSR_GEMV_Functor(const value_type alpha_, const AMatrix m_A_,
-                   const XVector m_x_, const YVector m_y_,
-                   const int blocks_per_team_, bool conj_)
+  BSR_GEMV_Functor(const value_type alpha_, const AMatrix &m_A_,
+                   const XVector &m_x_, value_type beta_, YVector &m_y_,
+                   const int block_dim_, bool conj_)
       : alpha(alpha_),
+        beta(beta_),
         m_A(m_A_),
         m_x(m_x_),
         m_y(m_y_),
-        block_dim(m_A_.blockDim()),
-        blocks_per_team(blocks_per_team_),
+        block_dim(block_dim_),
         conjugate(conj_) {
     static_assert(static_cast<int>(XVector::rank) == 1,
                   "XVector must be a rank 1 View.");
@@ -624,6 +625,11 @@ struct BSR_GEMV_Functor {
     const size_type Y_ptBeg = iBlock * block_dim;
     const size_type Y_ptEnd = Y_ptBeg + block_dim;
     auto Y_cur = Kokkos::subview(m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptEnd));
+
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(dev, 0, block_dim),
+                         [&](const ordinal_type &k) { Y_cur(k) *= beta; });
+
+    dev.team_barrier();
 
     const auto myRow = m_A.block_row_Const(iBlock);
     const auto count = myRow.length;
@@ -689,8 +695,8 @@ void spMatVec_no_transpose(
     }
   }
 
-  BSR_GEMV_Functor<AMatrix_Internal, XVector, YVector> func(alpha, A, x, y, 1,
-                                                            useConjugate);
+  BSR_GEMV_Functor<AMatrix_Internal, XVector, YVector> func(
+      alpha, A, x, beta, y, A.blockDim(), useConjugate);
   if (((A.nnz() > 10000000) || use_dynamic_schedule) && !use_static_schedule) {
     Kokkos::parallel_for(
         "KokkosSparse::bspmv<NoTranspose,Dynamic>",
@@ -727,10 +733,6 @@ void spMatVec_no_transpose(
     return;
   }
 
-  // We need to scale y first ("scaling" by zero just means filling
-  // with zeros), since the functor updates y (by adding alpha Op(A) x).
-  KokkosBlas::scal(y, beta, y);
-
   typedef KokkosSparse::Experimental::BsrMatrix<
       AT, AO, AD, Kokkos::MemoryTraits<Kokkos::Unmanaged>, AS>
       AMatrix_Internal;
@@ -745,34 +747,8 @@ void spMatVec_no_transpose(
       use_static_schedule = true;
     }
   }
-  int team_size           = -1;
-  int vector_length       = -1;
-  int64_t rows_per_thread = -1;
-
-  //
-  // Use the controls to allow the user to pass in some tuning parameters.
-  //
-  if (controls.isParameter("team size")) {
-    team_size = std::stoi(controls.getParameter("team size"));
-  }
-  if (controls.isParameter("vector length")) {
-    vector_length = std::stoi(controls.getParameter("vector length"));
-  }
-  if (controls.isParameter("rows per thread")) {
-    rows_per_thread = std::stoll(controls.getParameter("rows per thread"));
-  }
-
-  //
-  // Use the existing launch parameters routine from SPMV
-  //
-  const auto block_dim = A.blockDim();
-  int64_t rows_per_team =
-      KokkosSparse::Impl::spmv_launch_parameters<execution_space>(
-          A.numRows() * block_dim, A.nnz() * block_dim * block_dim,
-          rows_per_thread, team_size, vector_length);
-  int64_t blocks_per_team = (rows_per_team + block_dim - 1) / block_dim;
-  blocks_per_team         = (blocks_per_team < 1) ? 1 : blocks_per_team;
-  int64_t worksets = (A.numRows() + blocks_per_team - 1) / blocks_per_team;
+  int team_size     = -1;
+  int vector_length = -1;
 
   team_size = 8;
   if (block_dim <= 4) {
@@ -788,12 +764,20 @@ void spMatVec_no_transpose(
     vector_length = 32;
     team_size     = 8;
   }
-  worksets = A.numRows();
+  int64_t worksets = A.numRows();
 
-  AMatrix_Internal A_internal = A;
+  //
+  // Use the controls to allow the user to pass in some tuning parameters.
+  //
+  if (controls.isParameter("team size")) {
+    team_size = std::stoi(controls.getParameter("team size"));
+  }
+  if (controls.isParameter("vector length")) {
+    vector_length = std::stoi(controls.getParameter("vector length"));
+  }
 
   BSR_GEMV_Functor<AMatrix_Internal, XVector, YVector> func(
-      alpha, A_internal, x, y, blocks_per_team, useConjugate);
+      alpha, A, x, beta, y, A.blockDim(), useConjugate);
 
   if (((A.nnz() > 10000000) || use_dynamic_schedule) && !use_static_schedule) {
     Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Dynamic>>
