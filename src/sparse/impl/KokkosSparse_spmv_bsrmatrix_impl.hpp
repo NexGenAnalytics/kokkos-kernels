@@ -1289,7 +1289,7 @@ struct BSR_GEMM_Functor {
         const auto X_cur    = Kokkos::subview(
             m_x, ::Kokkos::make_pair(X_ptBeg, X_ptBeg + block_dim));
         KokkosBatched::TeamVectorGemmInternal<
-            KokkosBatched::Algo::Gemv::Unblocked>::
+            KokkosBatched::Algo::Gemm::Unblocked>::
             invoke(dev, static_cast<int>(block_dim), static_cast<int>(num_rhs),
                    static_cast<int>(block_dim), alpha, A_cur.data(),
                    static_cast<int>(A_cur.stride_0()),
@@ -1593,14 +1593,15 @@ struct BSR_GEMM_Transpose_Functor {
         const auto Y_ptBeg  = Y_blkCol * block_dim;
         auto Y_cur          = Kokkos::subview(
             m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptBeg + block_dim));
-        KokkosBatched::Algo::Gemv::Unblocked >
-            ::invoke(dev, block_dim, num_rhs, block_dim, alpha, A_cur.data(),
-                     static_cast<int>(A_cur.stride_1()),
-                     static_cast<int>(A_cur.stride_0()), X_cur.data(),
-                     static_cast<int>(X_cur.stride_0()),
-                     static_cast<int>(X_cur.stride_1()), val_one, Y_cur.data(),
-                     static_cast<int>(Y_cur.stride_0()),
-                     static_cast<int>(Y_cur.stride_1()));
+        KokkosBatched::TeamVectorGemmInternal<
+            KokkosBatched::Algo::Gemm::Unblocked>::
+            invoke(dev, block_dim, num_rhs, block_dim, alpha, A_cur.data(),
+                   static_cast<int>(A_cur.stride_1()),
+                   static_cast<int>(A_cur.stride_0()), X_cur.data(),
+                   static_cast<int>(X_cur.stride_0()),
+                   static_cast<int>(X_cur.stride_1()), val_one, Y_cur.data(),
+                   static_cast<int>(Y_cur.stride_0()),
+                   static_cast<int>(Y_cur.stride_1()));
       }
 #else
       Kokkos::parallel_for(
