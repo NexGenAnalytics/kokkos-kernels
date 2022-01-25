@@ -958,7 +958,7 @@ struct BSR_GEMV_Transpose_Functor {
                 });
           });
     } else {
-#ifndef UH_000_TEST_BLAS
+#ifdef UH_000_TEST_BLAS
       const y_value_type val_one = 1;
       for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
         const auto A_cur    = myRow.block(jBlock);
@@ -1587,7 +1587,7 @@ struct BSR_GEMM_Transpose_Functor {
                 });
           });
     } else {
-#ifndef UH_000_TEST_BLAS
+#ifdef UH_000_TEST_BLAS
       const y_value_type val_one = 1;
       for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
         const auto A_cur    = myRow.block(jBlock);
