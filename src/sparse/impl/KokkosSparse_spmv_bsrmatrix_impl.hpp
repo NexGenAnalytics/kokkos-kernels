@@ -538,6 +538,8 @@ struct BsrMatrixSpMVTensorCoreDispatcher {
 #include "KokkosBatched_Scale_Internal.hpp"
 #include "KokkosKernels_ExecSpaceUtils.hpp"
 
+#include "KokkosBlas2_team_gemv_spec.hpp"
+
 namespace KokkosSparse {
 namespace Experimental {
 namespace Impl {
@@ -642,26 +644,27 @@ struct BSR_GEMV_Functor {
     const auto count = myRow.length;
 
     if (conjugate) {
-      Kokkos::parallel_for(
-          Kokkos::TeamThreadRange(dev, 0, count),
-          [&](const ordinal_type &jBlock) {
-            const auto A_cur    = myRow.block(jBlock);
-            const auto X_blkCol = myRow.block_colidx(jBlock);
-            const auto X_ptBeg  = X_blkCol * block_dim;
-            const auto X_cur    = Kokkos::subview(
-                m_x, ::Kokkos::make_pair(X_ptBeg, X_ptBeg + block_dim));
-            Kokkos::parallel_for(
-                Kokkos::ThreadVectorRange(dev, block_dim),
-                [&](const ordinal_type &k0) {
-                  y_value_type val(0);
-                  for (ordinal_type k1 = 0; k1 < block_dim; ++k1)
-                    val +=
-                        Kokkos::ArithTraits<value_type>::conj(A_cur(k0, k1)) *
-                        X_cur(k1);
-                  Kokkos::atomic_add(&Y_cur(k0), alpha * val);
-                });
-          });
+      typedef Kokkos::View<const y_value_type **, Kokkos::LayoutRight,
+                           typename AMatrix::device_type,
+                           Kokkos::MemoryUnmanaged>
+          block_values_type;
+
+      for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
+        const auto A_cur    = myRow.block(jBlock);
+        const auto X_blkCol = myRow.block_colidx(jBlock);
+        const auto X_ptBeg  = X_blkCol * block_dim;
+        const auto X_cur    = Kokkos::subview(
+            m_x, ::Kokkos::make_pair(X_ptBeg, X_ptBeg + block_dim));
+        KokkosBlas::Experimental::Impl::TeamGEMV<
+            team_member, block_values_type, XVector, YVector, -1,
+            false>::team_gemv(dev, alpha, A_cur, X_cur, val_one, Y_cur);
+      }
     } else {
+      typedef Kokkos::View<const y_value_type **, Kokkos::LayoutRight,
+                           typename AMatrix::device_type,
+                           Kokkos::MemoryUnmanaged>
+          block_values_type;
+
       for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
         const auto A_cur    = myRow.block(jBlock);
         const auto X_blkCol = myRow.block_colidx(jBlock);
@@ -937,62 +940,66 @@ struct BSR_GEMV_Transpose_Functor {
     const auto myRow = m_A.block_row_Const(iBlock);
     const auto count = myRow.length;
 
+    const y_value_type val_zero = 0;
+    y_value_type *shared_y      = (y_value_type *)dev.team_shmem().get_shmem(
+        block_dim * sizeof(y_value_type));
+
     if (conjugate) {
-      Kokkos::parallel_for(
-          Kokkos::TeamThreadRange(dev, 0, count),
-          [&](const ordinal_type &jBlock) {
-            const auto A_cur    = myRow.block(jBlock);
-            const auto Y_blkCol = myRow.block_colidx(jBlock);
-            const auto Y_ptBeg  = Y_blkCol * block_dim;
-            auto Y_cur          = Kokkos::subview(
-                m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptBeg + block_dim));
-            Kokkos::parallel_for(
-                Kokkos::ThreadVectorRange(dev, block_dim),
-                [&](const ordinal_type &k0) {
-                  y_value_type val(0);
-                  for (ordinal_type k1 = 0; k1 < block_dim; ++k1)
-                    val +=
-                        Kokkos::ArithTraits<value_type>::conj(A_cur(k1, k0)) *
-                        X_cur(k1);
-                  Kokkos::atomic_add(&Y_cur(k0), alpha * val);
-                });
-          });
-    } else {
-#ifdef UH_000_TEST_BLAS
-      const y_value_type val_one = 1;
+      typedef Kokkos::View<const y_value_type **, Kokkos::LayoutRight,
+                           typename AMatrix::device_type,
+                           Kokkos::MemoryUnmanaged>
+          block_values_type;
+      Kokkos::View<y_value_type *, typename AMatrix::device_type,
+                   Kokkos::MemoryUnmanaged>
+          shared_view(shared_y, block_dim);
       for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
-        const auto A_cur    = myRow.block(jBlock);
+        const auto A_cur = myRow.block(jBlock);
+        //
+        KokkosBlas::Experimental::Impl::TeamGEMV<
+            team_member, block_values_type, XVector, YVector, 2,
+            false>::team_gemv(dev, alpha, A_cur, X_cur, val_zero, shared_view);
+        //
+        dev.team_barrier();
+        //
         const auto Y_blkCol = myRow.block_colidx(jBlock);
         const auto Y_ptBeg  = Y_blkCol * block_dim;
         auto Y_cur          = Kokkos::subview(
             m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptBeg + block_dim));
-        KokkosBatched::TeamVectorGemvInternal<
-            KokkosBatched::Algo::Gemv::Unblocked>::
-            invoke(dev, block_dim, block_dim, alpha, A_cur.data(),
-                   static_cast<int>(A_cur.stride_1()),
-                   static_cast<int>(A_cur.stride_0()), X_cur.data(),
-                   static_cast<int>(X_cur.stride_0()), val_one, Y_cur.data(),
-                   static_cast<int>(Y_cur.stride_0()));
+        Kokkos::parallel_for(Kokkos::TeamVectorRange(dev, 0, block_dim),
+                             [&](const ordinal_type &ijk) {
+                               Kokkos::atomic_add(&Y_cur(ijk),
+                                                  shared_view(ijk));
+                             });
       }
-#else
-      Kokkos::parallel_for(
-          Kokkos::TeamThreadRange(dev, 0, count),
-          [&](const ordinal_type &jBlock) {
-            const auto A_cur    = myRow.block(jBlock);
-            const auto Y_blkCol = myRow.block_colidx(jBlock);
-            const auto Y_ptBeg  = Y_blkCol * block_dim;
-            auto Y_cur          = Kokkos::subview(
-                m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptBeg + block_dim));
-            Kokkos::parallel_for(Kokkos::ThreadVectorRange(dev, block_dim),
-                                 [&](const ordinal_type &k0) {
-                                   y_value_type val(0);
-                                   for (ordinal_type k1 = 0; k1 < block_dim;
-                                        ++k1)
-                                     val += A_cur(k1, k0) * X_cur(k1);
-                                   Kokkos::atomic_add(&Y_cur(k0), alpha * val);
-                                 });
-          });
-#endif
+    } else {
+      for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
+        const auto A_cur = myRow.block(jBlock);
+        //
+        KokkosBatched::TeamVectorGemvInternal<
+            KokkosBatched::Algo::Gemv::Unblocked>::invoke(dev, block_dim,
+                                                          block_dim, alpha,
+                                                          A_cur.data(),
+                                                          static_cast<int>(
+                                                              A_cur.stride_1()),
+                                                          static_cast<int>(
+                                                              A_cur.stride_0()),
+                                                          X_cur.data(),
+                                                          static_cast<int>(
+                                                              X_cur.stride_0()),
+                                                          val_zero, shared_y,
+                                                          1);
+        //
+        dev.team_barrier();
+        //
+        const auto Y_blkCol = myRow.block_colidx(jBlock);
+        const auto Y_ptBeg  = Y_blkCol * block_dim;
+        auto Y_cur          = Kokkos::subview(
+            m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptBeg + block_dim));
+        Kokkos::parallel_for(Kokkos::TeamVectorRange(dev, 0, block_dim),
+                             [&](const ordinal_type &ijk) {
+                               Kokkos::atomic_add(&Y_cur(ijk), shared_y[ijk]);
+                             });
+      }
     }
   }
 };
@@ -1128,11 +1135,19 @@ void spMatVec_transpose(const KokkosKernels::Experimental::Controls &controls,
     if (team_size < 0)
       policy = Kokkos::TeamPolicy<execution_space,
                                   Kokkos::Schedule<Kokkos::Dynamic>>(
-          worksets, Kokkos::AUTO, vector_length);
+                   worksets, Kokkos::AUTO, vector_length)
+                   .set_scratch_size(
+                       0, Kokkos::PerTeam(
+                              block_dim *
+                              sizeof(typename YVector::non_const_value_type)));
     else
       policy = Kokkos::TeamPolicy<execution_space,
                                   Kokkos::Schedule<Kokkos::Dynamic>>(
-          worksets, team_size, vector_length);
+                   worksets, team_size, vector_length)
+                   .set_scratch_size(
+                       0, Kokkos::PerTeam(
+                              block_dim *
+                              sizeof(typename YVector::non_const_value_type)));
     Kokkos::parallel_for("KokkosSparse::bspmv<Transpose,Dynamic>", policy,
                          func);
   } else {
@@ -1141,11 +1156,19 @@ void spMatVec_transpose(const KokkosKernels::Experimental::Controls &controls,
     if (team_size < 0)
       policy =
           Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static>>(
-              worksets, Kokkos::AUTO, vector_length);
+              worksets, Kokkos::AUTO, vector_length)
+              .set_scratch_size(
+                  0, Kokkos::PerTeam(
+                         block_dim *
+                         sizeof(typename YVector::non_const_value_type)));
     else
       policy =
           Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static>>(
-              worksets, team_size, vector_length);
+              worksets, team_size, vector_length)
+              .set_scratch_size(
+                  0, Kokkos::PerTeam(
+                         block_dim *
+                         sizeof(typename YVector::non_const_value_type)));
     Kokkos::parallel_for("KokkosSparse::bspmv<Transpose, Static>", policy,
                          func);
   }
@@ -1260,28 +1283,25 @@ struct BSR_GEMM_Functor {
     const auto count = myRow.length;
 
     if (conjugate) {
-      Kokkos::parallel_for(
-          Kokkos::TeamThreadRange(dev, 0, count),
-          [&](const ordinal_type &jBlock) {
-            const auto A_cur    = myRow.block(jBlock);
-            const auto X_blkCol = myRow.block_colidx(jBlock);
-            const auto X_ptBeg  = X_blkCol * block_dim;
-            const auto X_cur    = Kokkos::subview(
-                m_x, ::Kokkos::make_pair(X_ptBeg, X_ptBeg + block_dim),
-                Kokkos::ALL());
-            Kokkos::parallel_for(
-                Kokkos::ThreadVectorRange(dev, block_dim),
-                [&](const ordinal_type &k0) {
-                  for (ordinal_type kc = 0; kc < num_rhs; ++kc) {
-                    y_value_type val(0);
-                    for (ordinal_type k1 = 0; k1 < block_dim; ++k1)
-                      val +=
-                          Kokkos::ArithTraits<value_type>::conj(A_cur(k0, k1)) *
-                          X_cur(k1, kc);
-                    Kokkos::atomic_add(&Y_cur(k0, kc), alpha * val);
-                  }
-                });
-          });
+      for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
+        const auto A_cur    = myRow.block(jBlock);
+        const auto X_blkCol = myRow.block_colidx(jBlock);
+        const auto X_ptBeg  = X_blkCol * block_dim;
+        const auto X_cur    = Kokkos::subview(
+            m_x, ::Kokkos::make_pair(X_ptBeg, X_ptBeg + block_dim),
+            Kokkos::ALL());
+        KokkosBatched::TeamVectorGemmInternal<
+            KokkosBatched::Algo::Gemm::Unblocked,
+            true>::invoke(dev, static_cast<int>(block_dim),
+                          static_cast<int>(num_rhs),
+                          static_cast<int>(block_dim), alpha, A_cur.data(),
+                          static_cast<int>(A_cur.stride_0()),
+                          static_cast<int>(A_cur.stride_1()), X_cur.data(),
+                          static_cast<int>(X_cur.stride_0()),
+                          static_cast<int>(X_cur.stride_1()), val_one,
+                          Y_cur.data(), static_cast<int>(Y_cur.stride_0()),
+                          static_cast<int>(Y_cur.stride_1()));
+      }
     } else {
       for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
         const auto A_cur    = myRow.block(jBlock);
@@ -1291,15 +1311,16 @@ struct BSR_GEMM_Functor {
             m_x, ::Kokkos::make_pair(X_ptBeg, X_ptBeg + block_dim),
             Kokkos::ALL());
         KokkosBatched::TeamVectorGemmInternal<
-            KokkosBatched::Algo::Gemm::Unblocked>::
-            invoke(dev, static_cast<int>(block_dim), static_cast<int>(num_rhs),
-                   static_cast<int>(block_dim), alpha, A_cur.data(),
-                   static_cast<int>(A_cur.stride_0()),
-                   static_cast<int>(A_cur.stride_1()), X_cur.data(),
-                   static_cast<int>(X_cur.stride_0()),
-                   static_cast<int>(X_cur.stride_1()), val_one, Y_cur.data(),
-                   static_cast<int>(Y_cur.stride_0()),
-                   static_cast<int>(Y_cur.stride_1()));
+            KokkosBatched::Algo::Gemm::Unblocked,
+            false>::invoke(dev, static_cast<int>(block_dim),
+                           static_cast<int>(num_rhs),
+                           static_cast<int>(block_dim), alpha, A_cur.data(),
+                           static_cast<int>(A_cur.stride_0()),
+                           static_cast<int>(A_cur.stride_1()), X_cur.data(),
+                           static_cast<int>(X_cur.stride_0()),
+                           static_cast<int>(X_cur.stride_1()), val_one,
+                           Y_cur.data(), static_cast<int>(Y_cur.stride_0()),
+                           static_cast<int>(Y_cur.stride_1()));
       }
     }
   }
@@ -1563,71 +1584,74 @@ struct BSR_GEMM_Transpose_Functor {
     const auto myRow = m_A.block_row_Const(iBlock);
     const auto count = myRow.length;
 
+    const y_value_type val_zero = 0;
+    y_value_type *shared_y      = (y_value_type *)dev.team_shmem().get_shmem(
+        block_dim * num_rhs * sizeof(y_value_type));
+
     if (conjugate) {
-      Kokkos::parallel_for(
-          Kokkos::TeamThreadRange(dev, 0, count),
-          [&](const ordinal_type &jBlock) {
-            const auto A_cur    = myRow.block(jBlock);
-            const auto Y_blkCol = myRow.block_colidx(jBlock);
-            const auto Y_ptBeg  = Y_blkCol * block_dim;
-            auto Y_cur          = Kokkos::subview(
-                m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptBeg + block_dim),
-                Kokkos::ALL());
-            Kokkos::parallel_for(
-                Kokkos::ThreadVectorRange(dev, block_dim),
-                [&](const ordinal_type &k0) {
-                  for (ordinal_type kc = 0; kc < num_rhs; ++kc) {
-                    y_value_type val(0);
-                    for (ordinal_type k1 = 0; k1 < block_dim; ++k1)
-                      val +=
-                          Kokkos::ArithTraits<value_type>::conj(A_cur(k1, k0)) *
-                          X_cur(k1, kc);
-                    Kokkos::atomic_add(&Y_cur(k0, kc), alpha * val);
-                  }
-                });
-          });
-    } else {
-#ifdef UH_000_TEST_BLAS
-      const y_value_type val_one = 1;
       for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
-        const auto A_cur    = myRow.block(jBlock);
+        const auto A_cur = myRow.block(jBlock);
+        //
+        KokkosBatched::TeamVectorGemmInternal<
+            KokkosBatched::Algo::Gemm::Unblocked,
+            true>::invoke(dev, block_dim, num_rhs, block_dim, alpha,
+                          A_cur.data(), static_cast<int>(A_cur.stride_1()),
+                          static_cast<int>(A_cur.stride_0()), X_cur.data(),
+                          static_cast<int>(X_cur.stride_0()),
+                          static_cast<int>(X_cur.stride_1()), val_zero,
+                          shared_y, 1, block_dim);
+        //
+        dev.team_barrier();
+        //
         const auto Y_blkCol = myRow.block_colidx(jBlock);
         const auto Y_ptBeg  = Y_blkCol * block_dim;
         auto Y_cur          = Kokkos::subview(
             m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptBeg + block_dim),
             Kokkos::ALL());
-        KokkosBatched::TeamVectorGemmInternal<
-            KokkosBatched::Algo::Gemm::Unblocked>::
-            invoke(dev, block_dim, num_rhs, block_dim, alpha, A_cur.data(),
-                   static_cast<int>(A_cur.stride_1()),
-                   static_cast<int>(A_cur.stride_0()), X_cur.data(),
-                   static_cast<int>(X_cur.stride_0()),
-                   static_cast<int>(X_cur.stride_1()), val_one, Y_cur.data(),
-                   static_cast<int>(Y_cur.stride_0()),
-                   static_cast<int>(Y_cur.stride_1()));
+        Kokkos::parallel_for(Kokkos::TeamThreadRange(dev, 0, num_rhs),
+                             [&](const ordinal_type &kc) {
+                               Kokkos::parallel_for(
+                                   Kokkos::ThreadVectorRange(dev, 0, block_dim),
+                                   [&](const ordinal_type &kr) {
+                                     Kokkos::atomic_add(
+                                         &Y_cur(kr, kc),
+                                         shared_y[kr + kc * block_dim]);
+                                   });
+                             });
+        dev.team_barrier();
       }
-#else
-      Kokkos::parallel_for(
-          Kokkos::TeamThreadRange(dev, 0, count),
-          [&](const ordinal_type &jBlock) {
-            const auto A_cur    = myRow.block(jBlock);
-            const auto Y_blkCol = myRow.block_colidx(jBlock);
-            const auto Y_ptBeg  = Y_blkCol * block_dim;
-            auto Y_cur          = Kokkos::subview(
-                m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptBeg + block_dim),
-                Kokkos::ALL());
-            Kokkos::parallel_for(
-                Kokkos::ThreadVectorRange(dev, block_dim),
-                [&](const ordinal_type &k0) {
-                  for (ordinal_type kc = 0; kc < num_rhs; ++kc) {
-                    y_value_type val(0);
-                    for (ordinal_type k1 = 0; k1 < block_dim; ++k1)
-                      val += A_cur(k1, k0) * X_cur(k1, kc);
-                    Kokkos::atomic_add(&Y_cur(k0, kc), alpha * val);
-                  }
-                });
-          });
-#endif
+    } else {
+      for (ordinal_type jBlock = 0; jBlock < count; ++jBlock) {
+        const auto A_cur = myRow.block(jBlock);
+        //
+        KokkosBatched::TeamVectorGemmInternal<
+            KokkosBatched::Algo::Gemm::Unblocked,
+            false>::invoke(dev, block_dim, num_rhs, block_dim, alpha,
+                           A_cur.data(), static_cast<int>(A_cur.stride_1()),
+                           static_cast<int>(A_cur.stride_0()), X_cur.data(),
+                           static_cast<int>(X_cur.stride_0()),
+                           static_cast<int>(X_cur.stride_1()), val_zero,
+                           shared_y, 1, block_dim);
+        //
+        dev.team_barrier();
+        //
+        const auto Y_blkCol = myRow.block_colidx(jBlock);
+        const auto Y_ptBeg  = Y_blkCol * block_dim;
+        auto Y_cur          = Kokkos::subview(
+            m_y, ::Kokkos::make_pair(Y_ptBeg, Y_ptBeg + block_dim),
+            Kokkos::ALL());
+        Kokkos::parallel_for(Kokkos::TeamThreadRange(dev, 0, num_rhs),
+                             [&](const ordinal_type &kc) {
+                               Kokkos::parallel_for(
+                                   Kokkos::ThreadVectorRange(dev, 0, block_dim),
+                                   [&](const ordinal_type &kr) {
+                                     Kokkos::atomic_add(
+                                         &Y_cur(kr, kc),
+                                         shared_y[kr + kc * block_dim]);
+                                   });
+                             });
+        dev.team_barrier();
+      }
     }
   }
 };
@@ -1755,11 +1779,19 @@ void spMatMultiVec_transpose(
     if (team_size < 0)
       policy = Kokkos::TeamPolicy<execution_space,
                                   Kokkos::Schedule<Kokkos::Dynamic>>(
-          worksets, Kokkos::AUTO, vector_length);
+                   worksets, Kokkos::AUTO, vector_length)
+                   .set_scratch_size(
+                       0, Kokkos::PerTeam(
+                              block_dim * x.extent(1) *
+                              sizeof(typename YVector::non_const_value_type)));
     else
       policy = Kokkos::TeamPolicy<execution_space,
                                   Kokkos::Schedule<Kokkos::Dynamic>>(
-          worksets, team_size, vector_length);
+                   worksets, team_size, vector_length)
+                   .set_scratch_size(
+                       0, Kokkos::PerTeam(
+                              block_dim * x.extent(1) *
+                              sizeof(typename YVector::non_const_value_type)));
     Kokkos::parallel_for("KokkosSparse::bsr_spm_mv<Transpose,Dynamic>", policy,
                          func);
   } else {
@@ -1768,11 +1800,19 @@ void spMatMultiVec_transpose(
     if (team_size < 0)
       policy =
           Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static>>(
-              worksets, Kokkos::AUTO, vector_length);
+              worksets, Kokkos::AUTO, vector_length)
+              .set_scratch_size(
+                  0, Kokkos::PerTeam(
+                         block_dim * x.extent(1) *
+                         sizeof(typename YVector::non_const_value_type)));
     else
       policy =
           Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static>>(
-              worksets, team_size, vector_length);
+              worksets, team_size, vector_length)
+              .set_scratch_size(
+                  0, Kokkos::PerTeam(
+                         block_dim * x.extent(1) *
+                         sizeof(typename YVector::non_const_value_type)));
     Kokkos::parallel_for("KokkosSparse::bsr_spm_mv<Transpose, Static>", policy,
                          func);
   }
