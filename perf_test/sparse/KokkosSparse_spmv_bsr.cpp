@@ -467,12 +467,7 @@ void print_help() {
   printf(
       "  -l [LOOP]       : How many spmv to run to aggregate average time "
       "(default = 512). \n");
-  printf(
-      "  -nx             : Number of points in the x-direction (default = "
-      "32).\n");
-  printf(
-      "                    The matrix will be of dimension nx (nx - 1) (nx + "
-      "1).\n");
+  printf("  -n             : Target number of rows (default = 32,768).\n");
   printf(
       "  -nv             : Number of vectors to multiply with (default = 1). "
       "\n");
@@ -495,7 +490,13 @@ int main(int argc, char **argv) {
   int loop = 512;
   int bMax = 16;
   int nvec = 1;
-  int nx   = 32;
+  int n    = 32768;
+
+  // Matrix Type
+  // 0 : FD for 3D problem (default)
+  // 1 : random with 0.01 fill-in per row.
+  //
+  int mat_type = 0;
 
   char fOp[] = "N";
 
@@ -532,9 +533,9 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    if ((strcmp(argv[i], "-nx") == 0)) {
+    if ((strcmp(argv[i], "-n") == 0)) {
       int tmp = atoi(argv[++i]);
-      nx      = (tmp > 0) ? tmp : nx;
+      n       = (tmp > 0) ? tmp : n;
       continue;
     }
 
@@ -552,32 +553,51 @@ int main(int argc, char **argv) {
       if ((strcmp(argv[i], "H") == 0)) strcpy(fOp, "H");
       continue;
     }
+
+    if ((strcmp(argv[i], "--mat") == 0)) {
+      i++;
+      if ((strcmp(argv[i], "FD") == 0))
+        mat_type = 0;
+      else if ((strcmp(argv[i], "rand") == 0))
+        mat_type = 1;
+      continue;
+    }
   }
 
   Kokkos::initialize(argc, argv);
 
   {
-    // The mat_structure view is used to generate a matrix using
-    // finite difference (FD) or finite element (FE) discretization
-    // on a cartesian grid.
-    Kokkos::View<details::Ordinal * [3], Kokkos::HostSpace> mat_structure(
-        "Matrix Structure", 3);
-    mat_structure(0, 0) = nx;      // Request 8 grid point in 'x' direction
-    mat_structure(0, 1) = 0;       // Add BC to the left
-    mat_structure(0, 2) = 0;       // Add BC to the right
-    mat_structure(1, 0) = nx - 1;  // Request 7 grid point in 'y' direction
-    mat_structure(1, 1) = 0;       // Add BC to the bottom
-    mat_structure(1, 2) = 0;       // Add BC to the top
-    mat_structure(2, 0) = nx + 1;  // Request 9 grid point in 'z' direction
-    mat_structure(2, 1) = 0;       // Add BC to the bottom
-    mat_structure(2, 2) = 0;       // Add BC to the top
-
     typedef typename KokkosSparse::CrsMatrix<details::Scalar, details::Ordinal,
                                              Kokkos::HostSpace, void, int>
         h_crsMat_type;
+    h_crsMat_type mat_b1;
 
-    h_crsMat_type mat_b1 =
-        Test::generate_structured_matrix3D<h_crsMat_type>("FD", mat_structure);
+    if (mat_type == 1) {
+      Offset nnz = 10 * n;
+      // note: the help text says the bandwidth is fixed at 0.01 * numRows
+      // CAVEAT:  small problem sizes are problematic, b/c of 0.01*numRows
+      mat_b1 = KokkosKernels::Impl::kk_generate_sparse_matrix<h_crsMat_type>(
+          n, n, nnz, 0, 0.01 * n);
+    } else {
+      // The mat_structure view is used to generate a matrix using
+      // finite difference (FD) discretization on a cartesian grid.
+      int nx = static_cast<int>(cbrt(n));
+      nx     = (nx < 2) : 2 : nx;
+      Kokkos::View<details::Ordinal * [3], Kokkos::HostSpace> mat_structure(
+          "Matrix Structure", 3);
+      mat_structure(0, 0) = nx;      // Request 8 grid point in 'x' direction
+      mat_structure(0, 1) = 0;       // Add BC to the left
+      mat_structure(0, 2) = 0;       // Add BC to the right
+      mat_structure(1, 0) = nx - 1;  // Request 7 grid point in 'y' direction
+      mat_structure(1, 1) = 0;       // Add BC to the bottom
+      mat_structure(1, 2) = 0;       // Add BC to the top
+      mat_structure(2, 0) = nx + 1;  // Request 9 grid point in 'z' direction
+      mat_structure(2, 1) = 0;       // Add BC to the bottom
+      mat_structure(2, 2) = 0;       // Add BC to the top
+
+      mat_b1 = Test::generate_structured_matrix3D<h_crsMat_type>("FD",
+                                                                 mat_structure);
+    }
 
     int total_errors = 0;
 
