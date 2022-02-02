@@ -258,7 +258,21 @@ int test_bsr_matrix_single_vec(
                 << tol << " tol * maxNorm " << tol * maxNorm << "\n";
     }
 
-    //-- Print the number of Gflops for both products
+#ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
+    KokkosKernels::Experimental::Controls controls_cusparse;
+    // Time a series of multiplications with the BsrMatrix
+    double time_cusparse = 0.0;
+    for (int jr = 0; jr < loop; ++jr) {
+      for (Ordinal ir = 0; ir < nRow; ++ir) h_ybsr(ir) = h_y0(ir);
+      Kokkos::deep_copy(ybsr, h_ybsr);
+      Kokkos::Timer timer;
+      KokkosSparse::spmv(controls_cusparse, fOp, alpha, Absr, xref, beta, ybsr);
+      time_cusparse += timer.seconds();
+      Kokkos::fence();
+    }
+#endif
+
+    //-- Print the number of Gflops for the products
     if (blockSize == 1) {
       printf("Op, blockSize: AvgGFlop(CrsMatrix) ");
       switch (static_cast<details::Implementation>(test)) {
@@ -266,27 +280,26 @@ int test_bsr_matrix_single_vec(
         case Implementation::KokkosKernels:
           printf(" AvgGFlop(BsrMatrix - KokkosKernels) \n");
           break;
-#ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
         case Implementation::Cuda:
           printf(" AvgGFlop(BsrMatrix - CUSPARSE) \n");
           break;
-#endif
-#ifdef KOKKOSKERNELS_ENABLE_TPL_MKL
         case Implementation::MKL:
           printf(" AvgGFlop(BsrMatrix - MKL) \n");
           break;
-#endif
       }
     }
+#ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
+    printf(" AvgGFlop(BsrMatrix - CUSPARSE) \n");
+#endif
+
     double num_flops = mat_val.size() * 2 * loop;
     double crs_flop  = (num_flops / time_crs) * 1.0e-09;
     double bsr_flop  = (num_flops / time_bsr) * 1.0e-09;
     std::cout << fOp << ", " << blockSize << "         : ";
-    if (crs_flop < bsr_flop) {
-      std::cout << crs_flop << "        <" << bsr_flop << ">";
-    } else {
-      std::cout << "<" << crs_flop << ">         " << bsr_flop;
-    }
+    std::cout << crs_flop << "        " << bsr_flop;
+#ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
+    std::cout << "        " << (num_flops / time_cusparse) * 1.0e-09;
+#endif
     std::cout << std::endl;
 
   }  // for (Ordinal blockSize = 1; blockSize < bMax; ++blockSize)
@@ -573,7 +586,7 @@ int main(int argc, char **argv) {
     h_crsMat_type mat_b1;
 
     if (mat_type == 1) {
-      Offset nnz = 10 * n;
+      int nnz = 10 * n;
       // note: the help text says the bandwidth is fixed at 0.01 * numRows
       // CAVEAT:  small problem sizes are problematic, b/c of 0.01*numRows
       mat_b1 = KokkosKernels::Impl::kk_generate_sparse_matrix<h_crsMat_type>(
@@ -582,7 +595,7 @@ int main(int argc, char **argv) {
       // The mat_structure view is used to generate a matrix using
       // finite difference (FD) discretization on a cartesian grid.
       int nx = static_cast<int>(cbrt(n));
-      nx     = (nx < 2) : 2 : nx;
+      nx     = (nx < 2) ? 2 : nx;
       Kokkos::View<details::Ordinal * [3], Kokkos::HostSpace> mat_structure(
           "Matrix Structure", 3);
       mat_structure(0, 0) = nx;      // Request 8 grid point in 'x' direction
