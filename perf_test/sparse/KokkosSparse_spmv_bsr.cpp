@@ -563,7 +563,7 @@ int main(int argc, char **argv) {
       auto h_values_crs = Kokkos::create_mirror_view(d_values_crs);
       for (int ir = 0; ir < bs; ++ir) {
         for (int jc = 0; jc < bs; ++jc) {
-          set_random_value(h_values(ir, jc));
+          details::set_random_value(h_values(ir, jc));
           h_values_crs(ir + jc * bs) = h_values(ir, jc);
         }
       }
@@ -571,9 +571,9 @@ int main(int argc, char **argv) {
       Kokkos::deep_copy(d_values_crs, h_values_crs);
       //
       Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_x("x", bs);
-      for (int ir = 0; ir < bs; ++ir)
-        set_random_value(h_x(ir));
       auto h_x = Kokkos::create_mirror_view(d_x);
+      for (int ir = 0; ir < bs; ++ir)
+        details::set_random_value(h_x(ir));
       Kokkos::deep_copy(d_x, h_x);
       //
       double alpha = 1.234, beta = 4.56;
@@ -583,12 +583,36 @@ int main(int argc, char **argv) {
       double time_blas = 0.0;
       for (int jr = 0; jr < loop; ++jr) {
         Kokkos::Timer timer;
-        KokkosSparse::spmv(controls, fOp, alpha, Absr, xref, beta, ybsr);
         KokkosBlas::gemv('N', alpha, d_values, d_x, beta, d_y);
         time_blas += timer.seconds();
         Kokkos::fence();
       }
-      std::cout << bs << " " << time_blas << "\n";
+      //
+      Kokkos::View<int*, Kokkos::DefaultExecutionSpace> d_rowmap("rowmpa", bs+1);
+      auto h_rowmap = Kokkos::create_mirror_view(d_rowmap);
+      for (int ii = 0; ii < bs; ++ii)
+        h_rowmap(ii + 1) = h_rowmap(ii) + bs;
+      Kokkos::deep_copy(d_rowmap, h_rowmap);
+      Kokkos::View<int*, Kokkos::DefaultExecutionSpace> d_colidx("cidx", bs*bs);
+      auto h_colidx = Kokkos::create_mirror_view(d_colidx);
+      for (int ii = 0; ii < bs; ++ii) {
+        for (int jj = 0; jj < bs; ++bs) {
+          h_colidx(ii * bs + jj) = jj;
+        }
+      }
+      Kokkos::deep_copy(d_colidx, h_colidx);
+      //
+      KokkosSparse::CrsMatrix<double, int, Kokkos::DefaultExecutionSpace, void, int>
+          d_Mat("matrix", bs, bs, bs*bs, d_val_crs, d_rowmap, d_colidx);
+      double time_crs = 0.0;
+      for (int jr = 0; jr < loop; ++jr) {
+        Kokkos::Timer timer;
+        KokkosSparse::spmv('N', alpha, d_Mat, d_x, beta, d_y);
+        time_crs += timer.seconds();
+        Kokkos::fence();
+      }
+      //
+      std::cout << bs << " " << time_blas << " " << time_crs << "\n";
     }
   }
   ////////
