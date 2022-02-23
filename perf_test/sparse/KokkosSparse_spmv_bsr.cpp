@@ -554,6 +554,45 @@ int main(int argc, char **argv) {
 
   Kokkos::initialize(argc, argv);
 
+  ////////
+  {
+    for (int bs = 2; bs < bMax; ++bs) {
+      Kokkos::View<double**, Kokkos::DefaultExecutionSpace> d_values("mat", bs*bs);
+      auto h_values = Kokkos::create_mirror_view(d_values);
+      Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_values_crs("mat_crs", bs*bs);
+      auto h_values_crs = Kokkos::create_mirror_view(d_values_crs);
+      for (int ir = 0; ir < bs; ++ir) {
+        for (int jc = 0; jc < bs; ++jc) {
+          set_random_value(h_values(ir, jc));
+          h_values_crs(ir + jc * bs) = h_values(ir, jc);
+        }
+      }
+      Kokkos::deep_copy(d_values, h_values);
+      Kokkos::deep_copy(d_values_crs, h_values_crs);
+      //
+      Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_x("x", bs);
+      for (int ir = 0; ir < bs; ++ir)
+        set_random_value(h_x(ir));
+      auto h_x = Kokkos::create_mirror_view(d_x);
+      Kokkos::deep_copy(d_x, h_x);
+      //
+      double alpha = 1.234, beta = 4.56;
+      //
+      Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_y("y", bs);
+      //
+      double time_blas = 0.0;
+      for (int jr = 0; jr < loop; ++jr) {
+        Kokkos::Timer timer;
+        KokkosSparse::spmv(controls, fOp, alpha, Absr, xref, beta, ybsr);
+        KokkosBlas::gemv('N', alpha, d_values, d_x, beta, d_y);
+        time_blas += timer.seconds();
+        Kokkos::fence();
+      }
+      std::cout << bs << " " << time_blas << "\n";
+    }
+  }
+  ////////
+
   {
     // The mat_structure view is used to generate a matrix using
     // finite difference (FD) or finite element (FE) discretization
