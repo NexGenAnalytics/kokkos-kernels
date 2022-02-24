@@ -556,63 +556,172 @@ int main(int argc, char **argv) {
 
   ////////
   {
-    for (int bs = 2; bs < bMax; ++bs) {
-      Kokkos::View<double**, Kokkos::DefaultExecutionSpace> d_values("mat", bs*bs);
+    double alpha = 1.234, beta = 4.56;
+    int nnz_per_row = 7;
+    //
+    KokkosKernels::Experimental::Controls controls;
+    if (test != static_cast<int>(details::Implementation::Cuda)) {
+      controls.setParameter("algorithm", "native");
+    }
+
+    //
+    for (int bs = 1; bs < bMax; ++bs) {
+      //
+      Kokkos::View<double**, Kokkos::DefaultExecutionSpace> d_values("mat", bs, bs);
       auto h_values = Kokkos::create_mirror_view(d_values);
-      Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_values_crs("mat_crs", bs*bs);
-      auto h_values_crs = Kokkos::create_mirror_view(d_values_crs);
       for (int ir = 0; ir < bs; ++ir) {
         for (int jc = 0; jc < bs; ++jc) {
           details::set_random_value(h_values(ir, jc));
-          h_values_crs(ir + jc * bs) = h_values(ir, jc);
         }
       }
       Kokkos::deep_copy(d_values, h_values);
-      Kokkos::deep_copy(d_values_crs, h_values_crs);
       //
-      Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_x("x", bs);
-      auto h_x = Kokkos::create_mirror_view(d_x);
-      for (int ir = 0; ir < bs; ++ir)
-        details::set_random_value(h_x(ir));
-      Kokkos::deep_copy(d_x, h_x);
-      //
-      double alpha = 1.234, beta = 4.56;
-      //
-      Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_y("y", bs);
-      //
-      double time_blas = 0.0;
-      for (int jr = 0; jr < loop; ++jr) {
-        Kokkos::Timer timer;
-        KokkosBlas::gemv('N', alpha, d_values, d_x, beta, d_y);
-        time_blas += timer.seconds();
-        Kokkos::fence();
+      Kokkos::View<double**, Kokkos::DefaultExecutionSpace> d_values_2("mat", bs, nnz_per_row * bs);
+      auto h_values_2 = Kokkos::create_mirror_view(d_values_2);
+      for (int ir = 0; ir < bs; ++ir) {
+        for (int jc = 0; jc < nnz_per_row * bs; ++jc) {
+          details::set_random_value(h_values_2(ir, jc));
+        }
       }
+      Kokkos::deep_copy(d_values_2, h_values_2);
+      //
+      Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_values_crs("mat_crs", nnz_per_row*bs*bs);
+      auto h_values_crs = Kokkos::create_mirror_view(d_values_crs);
+      for (int ii = 0; ii < h_values_crs.extent(0); ++ii)
+        details::set_random_value(h_values_crs(ii));
+      Kokkos::deep_copy(d_values_crs, h_values_crs);
       //
       Kokkos::View<int*, Kokkos::DefaultExecutionSpace> d_rowmap("rowmpa", bs+1);
       auto h_rowmap = Kokkos::create_mirror_view(d_rowmap);
       for (int ii = 0; ii < bs; ++ii)
-        h_rowmap(ii + 1) = h_rowmap(ii) + bs;
+        h_rowmap(ii + 1) = h_rowmap(ii) + nnz_per_row * bs;
       Kokkos::deep_copy(d_rowmap, h_rowmap);
-      Kokkos::View<int*, Kokkos::DefaultExecutionSpace> d_colidx("cidx", bs*bs);
+      Kokkos::View<int*, Kokkos::DefaultExecutionSpace> d_colidx("cidx", nnz_per_row*bs*bs);
       auto h_colidx = Kokkos::create_mirror_view(d_colidx);
       for (int ii = 0; ii < bs; ++ii) {
-        for (int jj = 0; jj < bs; ++bs) {
-          h_colidx(ii * bs + jj) = jj;
+        for (int jj = 0; jj < nnz_per_row * bs; ++jj) {
+          h_colidx(ii * nnz_per_row * bs + jj) = jj;
         }
       }
       Kokkos::deep_copy(d_colidx, h_colidx);
       //
       KokkosSparse::CrsMatrix<double, int, Kokkos::DefaultExecutionSpace, void, int>
-          d_Mat("matrix", bs, bs, bs*bs, d_val_crs, d_rowmap, d_colidx);
-      double time_crs = 0.0;
-      for (int jr = 0; jr < loop; ++jr) {
-        Kokkos::Timer timer;
-        KokkosSparse::spmv('N', alpha, d_Mat, d_x, beta, d_y);
-        time_crs += timer.seconds();
-        Kokkos::fence();
+      d_Mat("matrix", bs, nnz_per_row*bs, nnz_per_row*bs*bs, d_values_crs, d_rowmap, d_colidx);
+      //
+      KokkosSparse::Experimental::BsrMatrix<double, int, Kokkos::DefaultExecutionSpace, void, int>
+      d_Bsr(d_Mat, bs);
+      //
+      double time_crs = 0.0, time_bsr = 0.0, time_blas = 0.0, time_blas2 = 0.0;
+      //
+      if (nvec == 1) {
+        Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_x("x", bs);
+        auto h_x = Kokkos::create_mirror_view(d_x);
+        for (int ir = 0; ir < bs; ++ir)
+          details::set_random_value(h_x(ir));
+        Kokkos::deep_copy(d_x, h_x);
+        //
+        Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_y("y", bs);
+        //
+        for (int jr = 0; jr < loop; ++jr) {
+          Kokkos::Timer timer;
+          for (int iblock = 0; iblock < nnz_per_row; ++iblock) {
+            KokkosBlas::gemv("N", alpha, d_values, d_x, beta, d_y);
+          }
+          time_blas += timer.seconds();
+          Kokkos::fence();
+        }
+        //
+        Kokkos::View<double*, Kokkos::DefaultExecutionSpace> d_x2("x", nnz_per_row * bs);
+        auto h_x2 = Kokkos::create_mirror_view(d_x2);
+        for (int ir = 0; ir < d_x2.extent(0); ++ir)
+          details::set_random_value(h_x2(ir));
+        Kokkos::deep_copy(d_x2, h_x2);
+        //
+        for (int jr = 0; jr < loop; ++jr) {
+          Kokkos::Timer timer;
+          KokkosSparse::spmv(controls, "N", alpha, d_Mat, d_x2, beta, d_y);
+          time_crs += timer.seconds();
+          Kokkos::fence();
+        }
+        //
+        for (int jr = 0; jr < loop; ++jr) {
+          Kokkos::Timer timer;
+          KokkosSparse::spmv(controls, "N", alpha, d_Bsr, d_x2, beta, d_y);
+          time_bsr += timer.seconds();
+          Kokkos::fence();
+        }
+        //
+        std::chrono::duration<double, std::nano> dt(0);
+        for (int jr = 0; jr < loop; ++jr) {
+          Kokkos::Timer timer;
+          auto tBegin = std::chrono::high_resolution_clock::now();
+          KokkosBlas::gemv("N", alpha, d_values_2, d_x2, beta, d_y);
+          auto tEnd = std::chrono::high_resolution_clock::now();
+          dt += tEnd - tBegin;
+          Kokkos::fence();
+        }
+        time_blas2 = dt.count();
+        //
+      }
+      else {
+        Kokkos::View<double**, Kokkos::DefaultExecutionSpace> d_x("x", bs, nvec);
+        auto h_x = Kokkos::create_mirror_view(d_x);
+        for (int ir = 0; ir < bs; ++ir) {
+          for (int jc = 0; jc < nvec; ++jc) {
+            details::set_random_value(h_x(ir, jc));
+          }
+        }
+        Kokkos::deep_copy(d_x, h_x);
+        //
+        Kokkos::View<double**, Kokkos::DefaultExecutionSpace> d_y("y", bs, nvec);
+        //
+        for (int jr = 0; jr < loop; ++jr) {
+          Kokkos::Timer timer;
+          for (int iblock = 0; iblock < nnz_per_row; ++iblock) {
+            KokkosBlas::gemm("N", "N", alpha, d_values, d_x, beta, d_y);
+          }
+          time_blas += timer.seconds();
+          Kokkos::fence();
+        }
+        //
+        Kokkos::View<double**, Kokkos::DefaultExecutionSpace> d_x2("x", nnz_per_row * bs, nvec);
+        auto h_x2 = Kokkos::create_mirror_view(d_x2);
+        for (int ir = 0; ir < nnz_per_row * bs; ++ir) {
+          for (int jc = 0; jc < nvec; ++jc) {
+            details::set_random_value(h_x2(ir, jc));
+          }
+        }
+        Kokkos::deep_copy(d_x2, h_x2);
+        //
+        for (int jr = 0; jr < loop; ++jr) {
+          Kokkos::Timer timer;
+          KokkosSparse::spmv(controls, "N", alpha, d_Mat, d_x2, beta, d_y);
+          time_crs += timer.seconds();
+          Kokkos::fence();
+        }
+        //
+        for (int jr = 0; jr < loop; ++jr) {
+          Kokkos::Timer timer;
+          KokkosSparse::spmv(controls, "N", alpha, d_Bsr, d_x2, beta, d_y);
+          time_bsr += timer.seconds();
+          Kokkos::fence();
+        }
+        //
+        for (int jr = 0; jr < loop; ++jr) {
+          Kokkos::Timer timer;
+          KokkosBlas::gemm("N", "N", alpha, d_values_2, d_x2, beta, d_y);
+          time_blas2 += timer.seconds();
+          Kokkos::fence();
+        }
+        //
       }
       //
-      std::cout << bs << " " << time_blas << " " << time_crs << "\n";
+      std::cout << bs << " " << time_blas << " " << time_blas2 << " " << time_crs
+      << " " << time_bsr;
+      std::cout << " d_mat " << d_Mat.numRows() << " x " << d_Mat.numCols()
+      << " nnz " << d_Mat.nnz()
+      << " nvec " << nvec;
+      std::cout << "\n";
     }
   }
   ////////
