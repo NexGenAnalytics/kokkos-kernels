@@ -55,6 +55,7 @@ MACRO(kokkoskernels_create_imported_tpl NAME)
    ${ARGN})
 
   IF (NOT TPL_IMPORTED_NAME)
+    message("current TPL_IMPORTED_NAME ${TPL_IMPORTED_NAME}")
     SET(TPL_IMPORTED_NAME KokkosKernels::${NAME})
   ENDIF()
 
@@ -63,14 +64,19 @@ MACRO(kokkoskernels_create_imported_tpl NAME)
   IF (KOKKOSKERNELS_HAS_TRILINOS)
     #TODO: we need to set a bunch of cache variables here
   ELSEIF (TPL_INTERFACE)
+    message("TPL INTERFACE DETECTED")
+    message("CREATION OF LIB ${NAME}")
     ADD_LIBRARY(${NAME} INTERFACE)
     #Give this an importy-looking name
+    message("CREATION OF IMPORTED LIB ${TPL_IMPORTED_NAME}")
     ADD_LIBRARY(${TPL_IMPORTED_NAME} ALIAS ${NAME})
     IF (TPL_LIBRARY)
       MESSAGE(SEND_ERROR "TPL Interface library ${NAME} should not have an IMPORTED_LOCATION")
     ENDIF()
     #Things have to go in quoted in case we have multiple list entries
     IF(TPL_LINK_LIBRARIES)
+      message("LINK LIBRARIES ${TPL_LINK_LIBRARIES} to ${NAME}")
+
       TARGET_LINK_LIBRARIES(${NAME} INTERFACE ${TPL_LINK_LIBRARIES})
       IF (NOT DEFINED ${NAME}_FOUND_INFO)
         SET(${NAME}_FOUND_INFO ${TPL_LINK_LIBRARIES})
@@ -278,7 +284,9 @@ MACRO(kokkoskernels_find_imported NAME)
   IF(TPL_LIBRARIES)
     LIST(APPEND TPL_VARS_NEEDED ${NAME}_FOUND_LIBRARIES)
   ENDIF()
+  message("TPLS CMAKE ${TPL_MODULE_NAME}")
   FIND_PACKAGE_HANDLE_STANDARD_ARGS(${TPL_MODULE_NAME} REQUIRED_VARS ${TPL_VARS_NEEDED})
+  message("TPLS CMAKE DONE ${TPL_MODULE_NAME} ${TPL_VARS_NEEDED}")
 
   IF (${TPL_MODULE_NAME}_FOUND)
     SET(IMPORT_TYPE)
@@ -372,8 +380,11 @@ MACRO(kokkoskernels_import_tpl NAME)
   CMAKE_POLICY(SET CMP0074 NEW)
 
   IF (KOKKOSKERNELS_ENABLE_TPL_${NAME})
+     MESSAGE( "KOKKOSKERNELS_ENABLE_TPL_ 1 OK ${NAME}")
+
     #Tack on a TPL here to make sure we avoid using anyone else's find
     FIND_PACKAGE(TPL${NAME} REQUIRED MODULE)
+    MESSAGE( "KOKKOSKERNELS_ENABLE_TPL_ 2 OK ${NAME}")
     IF (NOT TPL_${NAME}_IMPORTED_NAME)
       MESSAGE(FATAL_ERROR "Find module did not produce valid IMPORTED_NAME for ${NAME}")
     ENDIF()
