@@ -18,11 +18,34 @@
 #define _KOKKOSKERNELS_PRINT_CONFIGURATION_HPP
 
 #include "KokkosKernels_config.h"
+#include "KokkosKernels_TplsVersion.hpp"
 
 #include <iostream>
 
 namespace KokkosKernels {
 namespace Impl {
+
+inline void print_rocsparse_version(std::ostream& os) {
+#ifdef KOKKOSKERNELS_ENABLE_TPL_ROCSPARSE
+  os << "  "
+     << "KOKKOSKERNELS_ENABLE_TPL_ROCSPARSE: " << get_rocsparse_version()
+     << "\n";
+#else
+  os << "  "
+     << "KOKKOSKERNELS_ENABLE_TPL_ROCSPARSE: no\n";
+#endif
+}
+
+inline void print_rocblas_version(std::ostream& os) {
+#ifdef KOKKOSKERNELS_ENABLE_TPL_ROCBLAS
+  os << "  "
+     << "KOKKOSKERNELS_ENABLE_TPL_ROCBLAS: " << get_rocblas_version() << "\n";
+#else
+  os << "  "
+     << "KOKKOSKERNELS_ENABLE_TPL_ROCBLAS: no\n";
+#endif
+}
+
 inline void print_enabled_tpls(std::ostream& os) {
 #ifdef KOKKOSKERNELS_ENABLE_TPL_LAPACK
   os << "  "
@@ -87,20 +110,8 @@ inline void print_enabled_tpls(std::ostream& os) {
   os << "  "
      << "KOKKOSKERNELS_ENABLE_TPL_CUSPARSE: no\n";
 #endif
-#ifdef KOKKOSKERNELS_ENABLE_TPL_ROCBLAS
-  os << "  "
-     << "KOKKOSKERNELS_ENABLE_TPL_ROCBLAS: yes\n";
-#else
-  os << "  "
-     << "KOKKOSKERNELS_ENABLE_TPL_ROCBLAS: no\n";
-#endif
-#ifdef KOKKOSKERNELS_ENABLE_TPL_ROCSPARSE
-  os << "  "
-     << "KOKKOSKERNELS_ENABLE_TPL_ROCSPARSE: yes\n";
-#else
-  os << "  "
-     << "KOKKOSKERNELS_ENABLE_TPL_ROCSPARSE: no\n";
-#endif
+  print_rocblas_version(os);
+  print_rocsparse_version(os);
 #ifdef KOKKOSKERNELS_ENABLE_TPL_METIS
   os << "KOKKOSKERNELS_ENABLE_TPL_METIS: yes\n";
 #else
