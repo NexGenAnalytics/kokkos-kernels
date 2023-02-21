@@ -18,6 +18,7 @@
 #define _KOKKOSKERNELS_TPLS_VERSIONS_HPP
 
 #include "KokkosKernels_config.h"
+#include <iostream>
 
 #if defined(KOKKOSKERNELS_ENABLE_TPL_ROCSPARSE)
 #include <Kokkos_Core.hpp>
@@ -29,6 +30,16 @@
 #include "KokkosBlas_tpl_spec.hpp"
 #include <rocblas.h>
 #endif
+
+#if defined(KOKKOSKERNELS_ENABLE_TPL_CUBLAS)
+#include "cublas_v2.h"
+
+#endif
+
+#if defined(KOKKOSKERNELS_ENABLE_TPL_CUSPARSE)
+#include "cusparse.h"
+#endif
+
 namespace KokkosKernels {
 
 #if defined(KOKKOSKERNELS_ENABLE_TPL_ROCSPARSE)
@@ -62,6 +73,30 @@ inline std::string get_rocblas_version() {
   rocblas_get_version_string(const_cast<char*>(version.data()), size);
 
   return version;
+}
+#endif
+
+#if defined(KOKKOSKERNELS_ENABLE_TPL_CUBLAS)
+inline std::string get_cublas_version() {
+  // Print version
+  std::stringstream ss;
+
+  ss << CUBLAS_VER_MAJOR << "." << CUBLAS_VER_MINOR << "." << CUBLAS_VER_PATCH
+     << CUBLAS_VER_BUILD;
+
+  return ss.str();
+}
+#endif
+
+#if defined(KOKKOSKERNELS_ENABLE_TPL_CUSPARSE)
+inline std::string get_cusparse_version() {
+  // Print version
+  std::stringstream ss;
+
+  ss << CUSPARSE_VER_MAJOR << "." << CUSPARSE_VER_MINOR << "."
+     << CUSPARSE_VER_PATCH << CUSPARSE_VER_BUILD;
+
+  return ss.str();
 }
 #endif
 

@@ -19,11 +19,30 @@
 
 #include "KokkosKernels_config.h"
 #include "KokkosKernels_TplsVersion.hpp"
-
 #include <iostream>
 
 namespace KokkosKernels {
 namespace Impl {
+
+inline void print_cublas_version(std::ostream& os) {
+#ifdef KOKKOSKERNELS_ENABLE_TPL_CUBLAS
+  os << "  "
+     << "KOKKOSKERNELS_ENABLE_TPL_CUBLAS: " << get_cublas_version() << "\n";
+#else
+  os << "  "
+     << "KOKKOSKERNELS_ENABLE_TPL_CUBLAS: no\n";
+#endif
+}
+
+inline void print_cusparse_version(std::ostream& os) {
+#ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
+  os << "  "
+     << "KOKKOSKERNELS_ENABLE_TPL_CUSPARSE: " << get_cusparse_version() << "\n";
+#else
+  os << "  "
+     << "KOKKOSKERNELS_ENABLE_TPL_CUSPARSE: no\n";
+#endif
+}
 
 inline void print_rocsparse_version(std::ostream& os) {
 #ifdef KOKKOSKERNELS_ENABLE_TPL_ROCSPARSE
@@ -96,20 +115,8 @@ inline void print_enabled_tpls(std::ostream& os) {
   os << "  "
      << "KOKKOSKERNELS_ENABLE_TPL_MKL: no\n";
 #endif
-#ifdef KOKKOSKERNELS_ENABLE_TPL_CUBLAS
-  os << "  "
-     << "KOKKOSKERNELS_ENABLE_TPL_CUBLAS: yes\n";
-#else
-  os << "  "
-     << "KOKKOSKERNELS_ENABLE_TPL_CUBLAS: no\n";
-#endif
-#ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
-  os << "  "
-     << "KOKKOSKERNELS_ENABLE_TPL_CUSPARSE: yes\n";
-#else
-  os << "  "
-     << "KOKKOSKERNELS_ENABLE_TPL_CUSPARSE: no\n";
-#endif
+  print_cublas_version(os);
+  print_cusparse_version(os);
   print_rocblas_version(os);
   print_rocsparse_version(os);
 #ifdef KOKKOSKERNELS_ENABLE_TPL_METIS
