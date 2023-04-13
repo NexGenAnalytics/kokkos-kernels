@@ -89,10 +89,37 @@ inline void add_version_info() {
   }
 }
 
+inline void add_gpu_info() {
+  std::array<char, 128> buffer;
+  std::string result;
+
+  auto pipe = popen("nvidia-smi -L | grep GPU", "r");
+  if (!pipe) throw std::runtime_error("popen() failed!");
+
+  while (!feof(pipe)) {
+    if (fgets(buffer.data(), 128, pipe) != nullptr) result += buffer.data();
+  }
+
+  auto rc = pclose(pipe);
+  if (rc == 0) {
+    printf("Success\n");
+    auto sub    = result;
+    int gpu_pos = sub.find("GPU ");
+    while (gpu_pos < sub.length()) {
+      sub = sub.substr(gpu_pos);
+      benchmark::AddCustomContext("NVIDIA GPU",
+                                  sub.substr(0, sub.find("(UUID")));
+      sub     = sub.substr(sub.find("UUID"));
+      gpu_pos = sub.find("GPU ");
+    }
+  }
+}
+
 /// \brief Gather all context information and add it to benchmark context
 inline void add_benchmark_context(bool verbose = false) {
   add_kokkos_configuration(verbose);
   add_version_info();
+  add_gpu_info();
 }
 
 }  // namespace KokkosKernelsBenchmark
